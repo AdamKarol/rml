@@ -1,0 +1,228 @@
+---
+title: "Practical Machine Learning - Data Science Specialization"
+author: "Adam Karolewski"
+date: "31 maja 2018"
+output: html_document
+---
+<!-- wyrówanie tekstu: -->
+<!-- <style> -->
+<!-- body { -->
+<!-- text-align: justify} -->
+<!-- </style> -->
+
+```{r setup,echo=F,message = F, error = F, warning = F,comment = NA}
+library(knitr)
+opts_chunk$set(comment = NA)
+```
+
+##Machine Learning on Weight Lifting Exercises Dataset
+I am to use Weight Lifting Exercises Datase available on http://groupware.les.inf.puc-rio.br/har.
+Credit to:
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+Read more: http://groupware.les.inf.puc-rio.br/har#dataset#ixzz5H6QD3qTv
+
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions. Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes.
+
+###Aim of analysis 
+The aim of that project is to predict classe variable of 20 single readings in the dataset based on Machine Learning approach: both methodology and techniques / algorithmes.
+
+###Assumptions
+I am to rely on techniques and learning within the course. I am focused on using caret package in all phases of the project to extend learning about the library.
+
+###Remark
+We have to notice that in test set there are no features (NA values). There are single readings out of window order. In Qualitative Activity Recognition of Weight Lifting Exercises report we find out that length of the time window was important. The programm contributors built their model based on features like mean, variance, maximum, minimum. So we have to realize that this project has simplified approach to the classification problem that program contribiutors challanged.
+
+### Strategy and phases
+1. Exploratory data analysis
+  + simple exploratory
+  + plotting variables
+  + correlations
+2. Preprocessing
+  + zero and near zero-variance
+  + highly correlated variables
+3. Spliting into testing and training dataset
+4. Machine Learning
+  + algorithms - SVM, random forest, eXtreme Gradient Boosting
+  + cross validation - none, K-fold, leave one out
+5. Out of sample error - choice of the final model
+6. Prediction on quiz dataset
+
+### Exploratory data analyses
+#### Simple exploratory - logic of the datasets
+Dataset consists of 160 variables. The data consists of readings and features (based on readings) of the time window: mean, variance,standard deviation, max, min, amplitude, kurtosis and skewness. We do not have features in the test dataset so features may not be useful for classification of test set samples. Building model using mean, max, min and ampliutde might be alternative approach not taken here.
+
+I removed some columns at first:
+
+* X, user_name - classification should be universal, no matter what person
+* raw_timestamps, time window - refering to time windows
+* all features (mean, variance,standard deviation, max, min, amplitude, kurtosis and skewness)
+
+There are 52 variables left.
+Important variable might be time position in the time window - it can be computed from raw_timestamp_part1 (date and time) and raw_timestamp_part2 (miliseconds) but still we would have to know the starting time stamps in testing set - we do not have it.
+
+#### Plotting variables
+Densities show that there is some differences between classes. Still we may notice that some variables have similar densities: accecl_forearm_z, roll_belt,yaw_belt. We may notice that gyros_dumbbell and gyros_forearm may need some standarisation or log transformation - there must be some extreme values. Via simple filtering of one record (row no 5373) we got densities more accurate for those variables. 
+Densities are more indicative than boxplots in this case.
+```{r, echo=FALSE,  message=FALSE, warning=FALSE}
+require(tidyverse);require(caret)
+load("data.RData")
+dftest <- dftest[, unlist(lapply(dftest, function(x) !all(is.na(x))))]
+dftest <- dftest%>%select(-c(1:7))
+dftrain <- dftrain[,colnames(dftrain) %in% c(colnames(dftest),"classe")]
+dftrain <- dftrain[-5373,]
+dftrain2 <-gather(dftrain,1:52,key="var",value = "value")
+```
+
+```{r density, echo=F, fig.height=15, fig.width=10}
+ggplot(dftrain2)+
+  geom_density(aes(value,colour=classe))+
+  facet_wrap(~var, nrow=13, scales = "free")+
+  ggtitle("Density plots - variables by classes")+
+  theme(legend.position='top',axis.title.y = element_blank(),
+    plot.title = element_text(size=16,color='black',face='bold'))
+```
+
+#### Corelation plots
+We see that some variables are higly correlated both positivly and negativly. PCA may indicate also the posibility of dimension reduction. We should reduce dimensionality or use classifiers that deal with that issue.
+```{r correlations, echo=F, message=FALSE, warning=FALSE,fig.height=8, fig.width=8}
+require(corrplot)
+corrplot(cor(dftrain[,1:52]), number.cex=0.7, method ="color", 
+  order="hclust", addrect=16,tl.cex = 0.6, tl.col="black",cl.cex=0.6,cl.ratio = 0.1)
+```
+
+#### Principal Components Analysis
+PCA shows us that reducing dimensionality is good idea. 7 componets explain over 90% of variance, 9 over 95% and 18 over 99%.
+```{r pca, echo=F, message=FALSE, warning=FALSE,fig.height=5, fig.width=7}
+model_pca <- prcomp(dftrain[,1:52])
+df_pca <- data.frame(Cumulative.Proportion=cumsum(model_pca$sdev^2 / sum(model_pca$sdev^2)))
+plot(df_pca$Cumulative.Proportion,type="l", xlab="PC", ylab = "Cumulative Variance Proportion",
+  main="Variation explained by Principal Components",ylim = c(0.8,1), panel.first = grid())
+```
+
+### PreProcessing
+None of variables are zero or near zero-variance variable.
+
+There are some highly correlated variables - set the absolute cutoff to 0.95. We can find those variables in the correlation plot as well.
+```{r, echo=FALSE,message=FALSE, warning=FALSE}
+highlyCorDescr <- findCorrelation(cor(dftrain[,1:52]), cutoff = .95)
+colnames(dftest)[highlyCorDescr]
+```
+Still I have not decided to remove them.
+
+I also decided not to do any scaling and centering at this moment. Due to time limitation I will not compare different apporoaches.
+
+### Data splitting
+I have splitted dftrain set into new training set and new test set with training percentage p=0.6:
+* new trainig set - training models and conducting cross validation process
+* new test set - calculate out of sample error rate and carry out simple ensemble process
+I set seed to 222.
+
+```{r split_data, echo=FALSE,message=FALSE, warning=FALSE, eval=TRUE}
+set.seed(222)
+intrain <- createDataPartition(dftrain$classe, times = 1, p=0.6, list=F)
+train1 <- dftrain[intrain,]
+test1 <- dftrain[-intrain,]
+```
+
+### Machine Learning
+I used following methods:
+
+* Parallel Random Forest - method "parRF", default settings
+* Support Vector Machine - method "svmLinear2", default settings
+* eXtreme Gradient Boosting - method "xgbLinear", default settings
+
+For every method I applied trainControl:
+
+* none
+* trainControl(method = "repeatedcv",number = 10)
+* trainControl(method = "LOOCV")
+
+
+I set seed to 222.
+
+The 'leave one out' method took to much time and I quit the call of the script.
+
+### Out of sample error - choice of the final model
+Random forest and eXtreme gradient boosting are very good models for that dataset. I chose Accuracy as the error rate.
+
+The best model is xgb built on 10-fold cross validation. The differences between random forest and xgb are very little though. SVM is very poor for that dataset.
+
+Accuracy rate on the test dataset is so good that I decided not to do any ensembling as it would not have any space for improvment.
+
+
+```{r rf, echo=FALSE,message=FALSE, warning=FALSE}
+load("model1_rf.RData")
+load("model1_svm.RData")
+load("model1_xgb.RData")
+
+load("model2_rf.RData")
+load("model2_svm.RData")
+load("model2_xgb.RData")
+
+dfac <- data.frame()
+
+# 1 no cv
+cv <- "none"
+
+model <- model1_rf
+# plot(varImp(model1_rf))
+# model1_rf$results
+# summary(model1_rf)
+ac1 <- confusionMatrix(train1$classe,predict(model1_rf,train1[,-53]))$overall["Accuracy"]
+testing <- predict(model1_rf,test1[,-53])
+ac2 <- confusionMatrix(test1$classe,testing)$overall["Accuracy"]
+dfac <- bind_rows(dfac,data.frame(model$modelInfo$label,paste(model$modelInfo$library, collapse = ", "),cv,ac1, ac2))
+
+model <- model1_svm
+#plot(varImp(model1_svm))
+# model1_svm$results
+# model1_svm$bestTune
+ac1 <- confusionMatrix(train1$classe,predict(model1_svm,train1[,-53]))$overall["Accuracy"]
+testing <- predict(model1_svm,test1[,-53])
+ac2 <- confusionMatrix(test1$classe,testing)$overall["Accuracy"]
+dfac <- bind_rows(dfac,data.frame(model$modelInfo$label,paste(model$modelInfo$library, collapse = ", "),cv,ac1, ac2))
+
+model <- model1_xgb
+#plot(varImp(model1_xgb))
+# model1_xgb$results
+# model1_xgb$bestTune
+ac1 <- confusionMatrix(train1$classe,predict(model1_xgb,train1[,-53]))$overall["Accuracy"]
+testing <- predict(model1_xgb,test1[,-53])
+ac2 <- confusionMatrix(test1$classe,testing)$overall["Accuracy"]
+dfac <- bind_rows(dfac,data.frame(model$modelInfo$label,paste(model$modelInfo$library, collapse = ", "),cv,ac1, ac2))
+
+# 2 k- fold cv
+cv <- "10-fold"
+
+model <- model2_rf
+ac1 <- confusionMatrix(train1$classe,predict(model,train1[,-53]))$overall["Accuracy"]
+testing <- predict(model,test1[,-53])
+ac2 <- confusionMatrix(test1$classe,testing)$overall["Accuracy"]
+dfac <- bind_rows(dfac,data.frame(model$modelInfo$label,
+  paste(model$modelInfo$library, collapse = ", "), cv,ac1, ac2))
+
+model <- model2_svm
+ac1 <- confusionMatrix(train1$classe,predict(model,train1[,-53]))$overall["Accuracy"]
+testing <- predict(model,test1[,-53])
+ac2 <- confusionMatrix(test1$classe,testing)$overall["Accuracy"]
+dfac <- bind_rows(dfac,data.frame(model$modelInfo$label,paste(model$modelInfo$library, collapse = ", "),cv,ac1, ac2))
+
+model <- model2_xgb
+ac1 <- confusionMatrix(train1$classe,predict(model,train1[,-53]))$overall["Accuracy"]
+testing <- predict(model,test1[,-53])
+ac2 <- confusionMatrix(test1$classe,testing)$overall["Accuracy"]
+dfac <- bind_rows(dfac,data.frame(model$modelInfo$label,paste(model$modelInfo$library, collapse = ", "),cv,ac1, ac2))
+
+# koniec tabeli
+colnames(dfac) <- c("method", "library","cv", "in sample errror", "out of sample error")
+dfac <- dfac%>%arrange(desc(`out of sample error`))
+kable(dfac)
+```
+
+### Prediction on quiz dataset
+```{r,echo=FALSE,message=FALSE, warning=FALSE}
+testing <- predict(model2_xgb,dftest)
+result <- data.frame(problem_id=dftest$problem_id,predicted_classe=testing)
+kable(result)
+```
+
